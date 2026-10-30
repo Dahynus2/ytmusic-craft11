@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YT Music Craft</title>
+<style>
+  :root { color-scheme: dark; }
+  body { font-family: system-ui, sans-serif; background:#111; color:#eee; margin:0; padding:10px; display:flex; flex-direction:column; align-items:center; gap:8px; }
+  h1 { font-size:15px; margin:0; }
+  button, input { font-size:13px; padding:5px 9px; border-radius:8px; border:1px solid #444; background:#222; color:#eee; }
+  button { cursor:pointer; } button:hover { background:#333; }
+  .card { background:#1b1b1b; border:1px solid #333; border-radius:12px; padding:8px 10px; max-width:356px; width:100%; box-sizing:border-box; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  small { color:#999; line-height:1.5; }
+  #overlay { position:fixed; inset:0; background:#000c; display:none; align-items:center; justify-content:center; z-index:10; }
+  #overlay button { font-size:16px; padding:14px 20px; }
+  #playerWrap { width:356px; max-width:100%; height:200px; background:#000; border-radius:12px; overflow:hidden; }
+  #playerWrap iframe { width:100%; height:100%; }
+</style>
+</head>
+<body>
+<h1>YT Music Craft</h1>
+
+<div class="card" id="setup" hidden>
+  <b>Paso 1: Client ID de Google</b><br>
+  <small>Crea un "ID de cliente OAuth" tipo <i>Aplicación web</i> en Google Cloud Console y agrega
+  <code id="origin"></code> como "Orígenes de JavaScript autorizados". Pégalo aquí:</small>
+  <div class="row" style="margin-top:8px">
+    <input id="clientIdInput" style="flex:1;min-width:240px" placeholder="xxxxxxxx.apps.googleusercontent.com">
+    <button id="btnSaveId">Guardar</button>
+  </div>
+</div>
+
+<div class="card" id="login" hidden>
+  <div class="row">
+    <button id="btnLogin">Conectar con Google</button>
+    <button id="btnLogout" hidden>Desconectar</button>
+    <span id="who"></span>
+  </div>
+  <small>Conecta, vuelve a Minecraft (<b>M</b>) y minimiza esta ventana: la música sigue sonando.</small>
+</div>
+
+<div id="playerWrap"><div id="player"></div></div>
+<small id="info" style="max-width:356px;text-align:center">Esperando comandos desde Minecraft...</small>
+
+<div id="overlay"><button id="btnAudio">Click para activar el audio</button></div>
+
+<script src="https://accounts.google.com/gsi/client" async defer></script>
+<script src="https://www.youtube.com/iframe_api"></script>
+<script>
+const H = {'X-YTM':'1','Content-Type':'application/json'};
+function api(path, body) {
+  return body === undefined
+    ? fetch(path, {headers:H})
+    : fetch(path, {method:'POST', headers:H, body:JSON.stringify(body)});
+}
+const $ = id => document.getElementById(id);
+
+let cfg = {}, player = null, ready = false, tokenClient = null;
+const pending = [];
+
+/* ---------------- Login con Google ---------------- */
+function initGis() {
+  if (!window.google || !google.accounts) { setTimeout(initGis, 300); return; }
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: cfg.clientId,
+    scope: 'https://www.googleapis.com/auth/youtube.readonly',
+    callback: async r => {
+      if (!r.access_token) { $('who').textContent = 'No se pudo conectar'; return; }
+      await api('/api/token', {token:r.access_token, expiresIn:r.expires_in});
+      $('who').textContent = 'Conectado';
+      $('btnLogout').hidden = false;
+      // Renovar antes de que expire (~1 h)
+      setTimeout(() => tokenClient.requestAccessToken({prompt:''}), Math.max(60, r.expires_in - 300) * 1000);
+    },
+    error_callback: () => { $('who').textContent = 'Inicio de sesión cancelado'; }
+  });
+}
+$('btnLogin').onclick = () => tokenClient && tokenClient.requestAccessToken({prompt:''});
+$('btnLogout').onclick = async () => { await api('/api/logout', {}); $('who').textContent = 'Desconectado'; $('btnLogout').hidden = true; };
+$('btnSaveId').onclick = async () => {
+  const v = $('clientIdInput').value.trim();
+  if (!v) return;
+  await api('/api/clientid', {clientId:v});
+  location.reload();
+};
+
+/* ---------------- Reproductor oficial de YouTube ---------------- */
+function onYouTubeIframeAPIReady() {
+  player = new YT.Player('player', {
+    width:'100%', height:'100%',
+    playerVars: {playsinline:1, rel:0},
+    events: {
+      onReady: () => { ready = true; player.setVolume(cfg.volume ?? 60); pending.splice(0).forEach(run); },
+      onStateChange: () => report(),
+      onError: e => report({state:-100, error:e.data}),
+      onAutoplayBlocked: () => { $('overlay').style.display = 'flex'; }
+    }
+  });
+}
+$('btnAudio').onclick = () => { $('overlay').style.display = 'none'; player && player.playVideo(); };
+
+function run(c) {
+  if (!ready) { pending.push(c); return; }
+  switch (c.type) {
+    case 'load':   if (c.volume != null) player.setVolume(c.volume); player.loadVideoById(c.videoId); break;
+    case 'pause':  player.pauseVideo(); break;
+    case 'resume': player.playVideo(); break;
+    case 'volume': player.setVolume(c.volume); break;
+    case 'seek':   player.seekTo(c.seconds, true); break;
+  }
+}
+
+function report(extra) {
+  if (!ready) return;
+  const d = player.getVideoData ? player.getVideoData() : {};
+  const body = Object.assign({
+    state: player.getPlayerState(),
+    position: player.getCurrentTime() || 0,
+    duration: player.getDuration() || 0,
+    title: d.title || '',
+    videoId: d.video_id || ''
+  }, extra || {});
+  if (body.title) $('info').textContent = body.title;
+  api('/api/state', body).catch(() => {});
+}
+
+async function poll() {
+  try {
+    const cmds = await (await api('/api/poll')).json();
+    cmds.forEach(run);
+  } catch (e) { $('info').textContent = 'Sin conexión con Minecraft...'; }
+}
+
+/* ---------------- Arranque ---------------- */
+(async function boot() {
+  $('origin').textContent = location.origin;
+  cfg = await (await api('/api/config')).json();
+  if (!cfg.clientId) { $('setup').hidden = false; }
+  else { $('login').hidden = false; initGis(); }
+  setInterval(poll, 700);
+  setInterval(() => report(), 1000);
+})();
+</script>
+</body>
+</html>

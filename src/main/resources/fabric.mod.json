@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "ytmusic",
+  "version": "${version}",
+  "name": "YT Music Craft",
+  "description": "Escucha y mira YouTube / YouTube Music mientras juegas. Buscador, tus listas y control desde el juego.",
+  "authors": ["Tu nombre"],
+  "contact": { "homepage": "https://github.com/TU_USUARIO/ytmusic-craft" },
+  "license": "MIT",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["com.ytmusic.YTMusicMod"]
+  },
+  "depends": {
+    "fabricloader": ">=0.18.1",
+    "minecraft": "~1.21.11",
+    "java": ">=21",
+    "fabric-api": "*"
+  }
+}
